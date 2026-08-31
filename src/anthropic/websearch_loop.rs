@@ -812,7 +812,7 @@ impl WebSearchUsageSettlement {
     }
 
     fn usage(&self) -> TokenUsage {
-        self.usage.sanitized()
+        self.hook.normalize_token_usage(self.usage)
     }
 
     fn finish(
@@ -825,10 +825,11 @@ impl WebSearchUsageSettlement {
         if self.settled {
             return;
         }
+        let usage = self.usage();
         record_aggregated_usage(
             &self.hook,
             self.credential_id,
-            self.usage,
+            usage,
             self.credits,
             usage_status,
         );
@@ -838,8 +839,9 @@ impl WebSearchUsageSettlement {
                 trace_status,
                 error_type,
                 error_message,
-                self.usage,
+                usage,
                 self.credits,
+                self.hook.cache_ratio,
             );
         }
         self.settled = true;
@@ -1078,7 +1080,12 @@ where
     result
 }
 
-fn initial_stream_event(model: &str, input_tokens: i32) -> SseEvent {
+fn initial_stream_event(model: &str, input_tokens: i32, cache_ratio: f64) -> SseEvent {
+    let usage = TokenUsage {
+        uncached_input_tokens: input_tokens,
+        ..TokenUsage::default()
+    }
+    .with_cache_ratio(cache_ratio);
     let message_id = format!("msg_{}", &Uuid::new_v4().to_string().replace('-', "")[..24]);
     SseEvent::new(
         "message_start",
@@ -1093,10 +1100,10 @@ fn initial_stream_event(model: &str, input_tokens: i32) -> SseEvent {
                 "stop_reason": null,
                 "stop_sequence": null,
                 "usage": {
-                    "input_tokens": input_tokens.max(0),
+                    "input_tokens": usage.uncached_input_tokens,
                     "output_tokens": 0,
-                    "cache_creation_input_tokens": 0,
-                    "cache_read_input_tokens": 0
+                    "cache_creation_input_tokens": usage.cache_write_input_tokens,
+                    "cache_read_input_tokens": usage.cache_read_input_tokens
                 }
             }
         }),
@@ -1230,8 +1237,8 @@ async fn execute_web_search(
     Ok(result)
 }
 
-fn aggregated_trace_usage(usage: TokenUsage, credits: f64) -> TraceUsage {
-    let usage = usage.sanitized();
+fn aggregated_trace_usage(usage: TokenUsage, credits: f64, cache_ratio: f64) -> TraceUsage {
+    let usage = usage.with_cache_ratio(cache_ratio);
     TraceUsage {
         input_tokens: usage.uncached_input_tokens as u64,
         output_tokens: usage.output_tokens as u64,
@@ -1252,13 +1259,14 @@ fn finalize_aggregated_trace(
     error_message: Option<&str>,
     usage: TokenUsage,
     credits: f64,
+    cache_ratio: f64,
 ) {
     tracer.finalize(
         status,
         error_type,
         error_message,
         None,
-        aggregated_trace_usage(usage, credits),
+        aggregated_trace_usage(usage, credits, cache_ratio),
     );
 }
 
@@ -1293,7 +1301,8 @@ pub(super) async fn run_web_search_loop(
         payload.messages.clone(),
         payload.tools.clone(),
     ) as i32;
-    let initial_event = initial_stream_event(&payload.model, initial_input_tokens);
+    let initial_event =
+        initial_stream_event(&payload.model, initial_input_tokens, hook.cache_ratio);
     let (sender, receiver) = mpsc::channel(WEB_SEARCH_PROGRESS_CAPACITY);
     tokio::spawn(async move {
         let receiver_guard = sender.clone();
@@ -1867,7 +1876,7 @@ mod tests {
     #[tokio::test]
     async fn channel_response_exposes_message_start_before_background_progress() {
         let (sender, receiver) = mpsc::channel(WEB_SEARCH_PROGRESS_CAPACITY);
-        let response = render_channel_sse(initial_stream_event("gpt-5.6-sol", 17), receiver);
+        let response = render_channel_sse(initial_stream_event("gpt-5.6-sol", 17, 0.0), receiver);
         let mut body = response.into_body().into_data_stream();
 
         let first = tokio::time::timeout(Duration::from_millis(100), body.next())
@@ -2057,6 +2066,7 @@ mod tests {
             aggregator: Some(aggregator.clone()),
             client_keys: None,
             key_id: 0,
+            cache_ratio: 0.0,
             model: "test-model".to_string(),
             started_at: std::time::Instant::now(),
         };
@@ -3053,6 +3063,7 @@ mod tests {
                 cache_write_input_tokens: 4,
             },
             0.125,
+            0.0,
         );
         assert_eq!(trace.input_tokens, 3);
         assert_eq!(trace.output_tokens, 5);
@@ -3068,6 +3079,7 @@ mod tests {
                 cache_write_input_tokens: -4,
             },
             f64::NAN,
+            0.0,
         );
         assert_eq!(sanitized.input_tokens, 0);
         assert_eq!(sanitized.output_tokens, 0);

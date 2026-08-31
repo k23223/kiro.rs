@@ -39,14 +39,38 @@ impl TokenUsage {
         }
     }
 
-    #[cfg(test)]
-    /// OpenAI 口径的总输入 token（缓存读取是其中的子集）。
+    /// 总输入 token（未缓存、缓存写入和缓存读取三部分之和）。
     pub fn total_input_tokens(self) -> i32 {
         let usage = self.sanitized();
         usage
             .uncached_input_tokens
             .saturating_add(usage.cache_write_input_tokens)
             .saturating_add(usage.cache_read_input_tokens)
+    }
+
+    /// 当客户端 Key 配置了正数缓存比例时，强制重写输入用量拆分。
+    ///
+    /// `cache_ratio` 的单位为百分比。重写后缓存写入固定为 0，缓存读取按总输入
+    /// 四舍五入计算，剩余部分作为未缓存输入；输出 token 保持不变。比例为 0、
+    /// 负数或非有限值时保持原始用量，以兼容未启用配置的 Key。
+    pub fn with_cache_ratio(self, cache_ratio: f64) -> Self {
+        let usage = self.sanitized();
+        if !cache_ratio.is_finite() || cache_ratio <= 0.0 {
+            return usage;
+        }
+
+        let total_input = usage.total_input_tokens();
+        let ratio = cache_ratio.min(100.0);
+        let cache_read = ((total_input as f64) * ratio / 100.0)
+            .round()
+            .clamp(0.0, total_input as f64) as i32;
+
+        Self {
+            uncached_input_tokens: total_input.saturating_sub(cache_read),
+            output_tokens: usage.output_tokens,
+            cache_read_input_tokens: cache_read,
+            cache_write_input_tokens: 0,
+        }
     }
 
     /// 合并多次真实 provider 调用的用量。
@@ -143,6 +167,44 @@ mod tests {
         .sanitized();
 
         assert_eq!(usage, TokenUsage::default());
+    }
+
+    #[test]
+    fn cache_ratio_rewrites_total_input_and_disables_cache_writes() {
+        let usage = TokenUsage {
+            uncached_input_tokens: 100,
+            cache_read_input_tokens: 200,
+            cache_write_input_tokens: 700,
+            output_tokens: 23,
+        }
+        .with_cache_ratio(90.0);
+
+        assert_eq!(usage.uncached_input_tokens, 100);
+        assert_eq!(usage.cache_read_input_tokens, 900);
+        assert_eq!(usage.cache_write_input_tokens, 0);
+        assert_eq!(usage.output_tokens, 23);
+    }
+
+    #[test]
+    fn zero_cache_ratio_preserves_existing_split() {
+        let usage = TokenUsage {
+            uncached_input_tokens: 3,
+            cache_read_input_tokens: 7,
+            cache_write_input_tokens: 4,
+            output_tokens: 11,
+        };
+
+        assert_eq!(usage.with_cache_ratio(0.0), usage);
+    }
+
+    #[test]
+    fn cache_ratio_rounds_and_clamps_to_percentage_range() {
+        let usage = TokenUsage {
+            uncached_input_tokens: 1,
+            ..TokenUsage::default()
+        };
+        assert_eq!(usage.with_cache_ratio(50.0).cache_read_input_tokens, 1);
+        assert_eq!(usage.with_cache_ratio(100.0).uncached_input_tokens, 0);
     }
 
     #[test]

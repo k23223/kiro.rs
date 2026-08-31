@@ -1423,6 +1423,8 @@ pub struct StreamContext {
     /// 做互斥分摊：`input + cache_creation + cache_read == total`，避免把被缓存
     /// 覆盖的前缀重复计进 input_tokens。
     pub cache_usage: super::cache_metering::CacheUsage,
+    /// 客户端 Key 配置的强制缓存读取比例（百分比）；0 保持原计量行为。
+    pub cache_ratio: f64,
     /// meteringEvent 上报的 credit 计费量（上游真实下发，多次事件累加得到本次总量）
     pub credits: f64,
     /// 最近一次 meteringEvent 完整 payload（含 unit / unit_plural / usage）。
@@ -1453,17 +1455,26 @@ impl StreamContext {
     /// 精确 `metadataEvent.tokenUsage` 优先；只有上游未提供该事件时，才按
     /// contextUsage/请求估算总量与本地 CacheMeter 比例回退。
     pub fn resolved_usage(&self) -> (i32, i32, i32) {
-        if let Some(usage) = self.provider_token_usage {
-            let usage = usage.sanitized();
-            return (
-                usage.uncached_input_tokens,
-                usage.cache_write_input_tokens,
-                usage.cache_read_input_tokens,
-            );
+        let usage = if let Some(usage) = self.provider_token_usage {
+            usage.sanitized()
+        } else {
+            let total_real = self.context_input_tokens.unwrap_or(self.input_tokens);
+            let (input, cache_write, cache_read) =
+                self.cache_usage.split_against_total(total_real);
+            TokenUsage {
+                uncached_input_tokens: input,
+                output_tokens: 0,
+                cache_write_input_tokens: cache_write,
+                cache_read_input_tokens: cache_read,
+            }
         }
+        .with_cache_ratio(self.cache_ratio);
 
-        let total_real = self.context_input_tokens.unwrap_or(self.input_tokens);
-        self.cache_usage.split_against_total(total_real)
+        (
+            usage.uncached_input_tokens,
+            usage.cache_write_input_tokens,
+            usage.cache_read_input_tokens,
+        )
     }
 
     /// 精确 provider 输出 token 优先，否则返回流内容的本地估算。
@@ -1511,6 +1522,7 @@ impl StreamContext {
             text_block_index: None,
             strip_thinking_leading_newline: false,
             cache_usage: super::cache_metering::CacheUsage::default(),
+            cache_ratio: 0.0,
             credits: 0.0,
             metering: None,
             repeat_guard_last_line: String::new(),
@@ -1524,6 +1536,8 @@ impl StreamContext {
 
     /// 生成 message_start 事件
     pub fn create_message_start_event(&self) -> serde_json::Value {
+        let (input_tokens, cache_creation_input_tokens, cache_read_input_tokens) =
+            self.resolved_usage();
         json!({
             "type": "message_start",
             "message": {
@@ -1535,10 +1549,10 @@ impl StreamContext {
                 "stop_reason": null,
                 "stop_sequence": null,
                 "usage": {
-                    "input_tokens": self.input_tokens,
+                    "input_tokens": input_tokens,
                     "output_tokens": 1,
-                    "cache_creation_input_tokens": 0,
-                    "cache_read_input_tokens": 0
+                    "cache_creation_input_tokens": cache_creation_input_tokens,
+                    "cache_read_input_tokens": cache_read_input_tokens
                 }
             }
         })
@@ -2636,6 +2650,11 @@ impl BufferedStreamContext {
     /// 注入由 CacheMeter 计算的缓存覆盖情况（estimate 口径），最终上报时分摊。
     pub fn set_cache_usage(&mut self, cache_usage: super::cache_metering::CacheUsage) {
         self.inner.cache_usage = cache_usage;
+    }
+
+    /// 注入客户端 Key 配置的强制缓存读取比例。
+    pub fn set_cache_ratio(&mut self, cache_ratio: f64) {
+        self.inner.cache_ratio = cache_ratio;
     }
 
     /// 处理 Kiro 事件并缓冲结果
@@ -5444,6 +5463,29 @@ mod tests {
         }));
         assert_eq!(ctx.resolved_usage(), (0, 24, 23));
         assert_eq!(ctx.resolved_output_tokens(), 22);
+    }
+
+    #[test]
+    fn stream_usage_applies_client_cache_ratio_to_provider_snapshot() {
+        let mut ctx = StreamContext::new_with_thinking(
+            "claude-opus-4-7",
+            1000,
+            false,
+            HashMap::new(),
+            test_known_tools(),
+        );
+        ctx.cache_ratio = 90.0;
+        ctx.process_kiro_event(&Event::Metadata(crate::kiro::model::events::MetadataEvent {
+            token_usage: Some(TokenUsage {
+                uncached_input_tokens: 100,
+                cache_read_input_tokens: 200,
+                cache_write_input_tokens: 700,
+                output_tokens: 11,
+            }),
+        }));
+
+        assert_eq!(ctx.resolved_usage(), (100, 0, 900));
+        assert_eq!(ctx.resolved_output_tokens(), 11);
     }
 
     #[test]

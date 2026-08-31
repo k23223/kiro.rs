@@ -466,6 +466,11 @@ impl ClientKeyManager {
         }
     }
 
+    /// 返回指定 Key 的缓存比例；Key 不存在时返回 None。
+    pub fn cache_ratio_of(&self, id: u64) -> Option<f64> {
+        self.inner.read().entries.get(&id).map(|e| e.cache_ratio)
+    }
+
     /// 设置客户端 Key 的缓存比例，单位为百分比。
     pub fn set_cache_ratio(&self, id: u64, cache_ratio: f64) -> bool {
         if !cache_ratio.is_finite() || !(0.0..=100.0).contains(&cache_ratio) {

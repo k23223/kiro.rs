@@ -240,9 +240,16 @@ pub fn create_websearch_sse_stream(
     tool_use_id: String,
     search_results: Option<WebSearchResults>,
     input_tokens: i32,
+    cache_ratio: f64,
 ) -> impl Stream<Item = Result<Bytes, Infallible>> {
-    let events =
-        generate_websearch_events(&model, &query, &tool_use_id, search_results, input_tokens);
+    let events = generate_websearch_events(
+        &model,
+        &query,
+        &tool_use_id,
+        search_results,
+        input_tokens,
+        cache_ratio,
+    );
 
     stream::iter(
         events
@@ -258,7 +265,13 @@ fn generate_websearch_events(
     tool_use_id: &str,
     search_results: Option<WebSearchResults>,
     input_tokens: i32,
+    cache_ratio: f64,
 ) -> Vec<SseEvent> {
+    let input_usage = crate::kiro::model::events::TokenUsage {
+        uncached_input_tokens: input_tokens,
+        ..Default::default()
+    }
+    .with_cache_ratio(cache_ratio);
     let mut events = Vec::new();
     let message_id = format!(
         "msg_{}",
@@ -278,10 +291,10 @@ fn generate_websearch_events(
                 "content": [],
                 "stop_reason": null,
                 "usage": {
-                    "input_tokens": input_tokens,
+                    "input_tokens": input_usage.uncached_input_tokens,
                     "output_tokens": 0,
-                    "cache_creation_input_tokens": 0,
-                    "cache_read_input_tokens": 0
+                    "cache_creation_input_tokens": input_usage.cache_write_input_tokens,
+                    "cache_read_input_tokens": input_usage.cache_read_input_tokens
                 }
             }
         }),
@@ -535,10 +548,17 @@ fn render_websearch_response(
     tool_use_id: String,
     search_results: Option<WebSearchResults>,
     input_tokens: i32,
+    cache_ratio: f64,
 ) -> Response {
     if stream_response {
-        let stream =
-            create_websearch_sse_stream(model, query, tool_use_id, search_results, input_tokens);
+        let stream = create_websearch_sse_stream(
+            model,
+            query,
+            tool_use_id,
+            search_results,
+            input_tokens,
+            cache_ratio,
+        );
         Response::builder()
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, "text/event-stream")
@@ -560,7 +580,8 @@ fn render_websearch_response(
                 output_tokens,
                 cache_read_input_tokens: 0,
                 cache_write_input_tokens: 0,
-            },
+            }
+            .with_cache_ratio(cache_ratio),
             "",
             None,
         )
@@ -572,6 +593,7 @@ pub async fn handle_websearch_request(
     provider: std::sync::Arc<crate::kiro::provider::KiroProvider>,
     payload: &MessagesRequest,
     input_tokens: i32,
+    cache_ratio: f64,
     group: Option<&str>,
 ) -> Response {
     // 1. 提取搜索查询
@@ -609,6 +631,7 @@ pub async fn handle_websearch_request(
         tool_use_id,
         search_results,
         input_tokens,
+        cache_ratio,
     )
 }
 
@@ -701,6 +724,22 @@ mod tests {
         assert!(response.result.is_some());
     }
 
+    #[test]
+    fn websearch_sse_applies_cache_ratio_to_initial_usage() {
+        let events = generate_websearch_events(
+            "claude-sonnet-4",
+            "rust",
+            "srvtoolu_test",
+            None,
+            1000,
+            90.0,
+        );
+        let usage = &events[0].data["message"]["usage"];
+        assert_eq!(usage["input_tokens"], json!(100));
+        assert_eq!(usage["cache_creation_input_tokens"], json!(0));
+        assert_eq!(usage["cache_read_input_tokens"], json!(900));
+    }
+
     #[tokio::test]
     async fn test_non_stream_websearch_response_is_json() {
         let response = render_websearch_response(
@@ -710,6 +749,7 @@ mod tests {
             "srvtoolu_test".to_string(),
             None,
             12,
+            0.0,
         );
 
         assert_eq!(response.status(), StatusCode::OK);

@@ -697,6 +697,9 @@ fn build_usage_json(p: &ParsedResponse) -> Value {
         "prompt_tokens": p.prompt_tokens,
         "completion_tokens": p.completion_tokens,
         "total_tokens": p.prompt_tokens + p.completion_tokens,
+        "prompt_tokens_details": {
+            "cached_tokens": p.cached_tokens
+        }
     });
     if let Some(credit_usage) = p.credit_usage {
         usage["credit_usage"] = json!(credit_usage);

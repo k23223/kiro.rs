@@ -53,20 +53,33 @@ pub(crate) struct UsageRecordHook {
     pub aggregator: Option<SharedAggregator>,
     pub client_keys: Option<SharedClientKeyManager>,
     pub key_id: u64,
+    /// 当前客户端 Key 强制展示的缓存读取比例（百分比）。
+    pub cache_ratio: f64,
     pub model: String,
     pub started_at: Instant,
 }
 
 impl UsageRecordHook {
     pub fn from_state(state: &AppState, key_id: u64, model: String) -> Self {
+        let cache_ratio = state
+            .client_keys
+            .as_ref()
+            .and_then(|manager| manager.cache_ratio_of(key_id))
+            .unwrap_or(0.0);
         Self {
             recorder: state.usage_recorder.clone(),
             aggregator: state.usage_aggregator.clone(),
             client_keys: state.client_keys.clone(),
             key_id,
+            cache_ratio,
             model,
             started_at: Instant::now(),
         }
+    }
+
+    /// 按当前 Key 的配置统一重写输入缓存拆分。
+    pub fn normalize_token_usage(&self, usage: TokenUsage) -> TokenUsage {
+        usage.with_cache_ratio(self.cache_ratio)
     }
 
     pub fn record(
@@ -79,15 +92,21 @@ impl UsageRecordHook {
         credits: f64,
         status: &str,
     ) {
+        let usage = self.normalize_token_usage(TokenUsage {
+            uncached_input_tokens: input_tokens,
+            output_tokens,
+            cache_write_input_tokens: cache_creation_tokens,
+            cache_read_input_tokens: cache_read_tokens,
+        });
         let rec = UsageRecord {
             ts: Utc::now().to_rfc3339(),
             key_id: self.key_id,
             credential_id,
             model: self.model.clone(),
-            input_tokens: input_tokens.max(0) as u64,
-            output_tokens: output_tokens.max(0) as u64,
-            cache_creation_tokens: cache_creation_tokens.max(0) as u64,
-            cache_read_tokens: cache_read_tokens.max(0) as u64,
+            input_tokens: usage.uncached_input_tokens as u64,
+            output_tokens: usage.output_tokens as u64,
+            cache_creation_tokens: usage.cache_write_input_tokens as u64,
+            cache_read_tokens: usage.cache_read_input_tokens as u64,
             credits: if credits.is_finite() && credits > 0.0 {
                 credits
             } else {
@@ -406,24 +425,27 @@ fn resolve_non_stream_usage(
     fallback_output_tokens: i32,
     cache_usage: super::cache_metering::CacheUsage,
     provider_usage: Option<TokenUsage>,
+    cache_ratio: f64,
 ) -> (i32, i32, i32, i32) {
-    if let Some(usage) = provider_usage {
-        let usage = usage.sanitized();
-        return (
-            usage.uncached_input_tokens,
-            usage.output_tokens,
-            usage.cache_write_input_tokens,
-            usage.cache_read_input_tokens,
-        );
+    let usage = if let Some(usage) = provider_usage {
+        usage.sanitized()
+    } else {
+        let total_input = context_total_input_tokens.unwrap_or(fallback_total_input_tokens);
+        let (input, cache_write, cache_read) = cache_usage.split_against_total(total_input);
+        TokenUsage {
+            uncached_input_tokens: input,
+            output_tokens: fallback_output_tokens.max(0),
+            cache_write_input_tokens: cache_write,
+            cache_read_input_tokens: cache_read,
+        }
     }
+    .with_cache_ratio(cache_ratio);
 
-    let total_input = context_total_input_tokens.unwrap_or(fallback_total_input_tokens);
-    let (input, cache_write, cache_read) = cache_usage.split_against_total(total_input);
     (
-        input,
-        fallback_output_tokens.max(0),
-        cache_write,
-        cache_read,
+        usage.uncached_input_tokens,
+        usage.output_tokens,
+        usage.cache_write_input_tokens,
+        usage.cache_read_input_tokens,
     )
 }
 
@@ -669,6 +691,7 @@ pub async fn post_messages(
             provider,
             &payload,
             input_tokens,
+            hook.cache_ratio,
             key_ctx.group.as_deref(),
         )
         .await;
@@ -888,6 +911,7 @@ async fn handle_stream_request(
         known_tool_names,
     );
     ctx.cache_usage = cache_usage;
+    ctx.cache_ratio = hook.cache_ratio;
 
     // 生成初始事件
     let initial_events = ctx.generate_initial_events();
@@ -1347,7 +1371,7 @@ async fn handle_non_stream_request(
     if let Some(err) = tool_json_error {
         let message = err.message();
         if let Some(usage) = provider_token_usage {
-            let usage = usage.sanitized();
+            let usage = hook.normalize_token_usage(usage);
             let trace_usage = TraceUsage {
                 input_tokens: usage.uncached_input_tokens as u64,
                 output_tokens: usage.output_tokens as u64,
@@ -1420,6 +1444,7 @@ async fn handle_non_stream_request(
             fallback_output_tokens,
             cache_usage,
             provider_token_usage,
+            hook.cache_ratio,
         );
 
     // 构建 Anthropic 响应
@@ -1659,6 +1684,7 @@ pub async fn post_messages_cc(
             provider,
             &payload,
             input_tokens,
+            hook.cache_ratio,
             key_ctx.group.as_deref(),
         )
         .await;
@@ -1875,6 +1901,7 @@ async fn handle_stream_request_buffered(
         known_tool_names,
     );
     ctx.set_cache_usage(cache_usage);
+    ctx.set_cache_ratio(hook.cache_ratio);
 
     // 创建缓冲 SSE 流
     let stream = create_buffered_sse_stream(response, ctx, hook, credential_id, tracer);
@@ -2497,7 +2524,7 @@ mod tests {
         };
 
         assert_eq!(
-            resolve_non_stream_usage(100, Some(80), 9, fallback_cache, Some(provider)),
+            resolve_non_stream_usage(100, Some(80), 9, fallback_cache, Some(provider), 0.0),
             (3, 11, 4, 7)
         );
     }
@@ -2511,12 +2538,30 @@ mod tests {
         };
 
         assert_eq!(
-            resolve_non_stream_usage(100, Some(80), 9, cache_usage, None),
+            resolve_non_stream_usage(100, Some(80), 9, cache_usage, None, 0.0),
             (40, 9, 20, 20)
         );
         assert_eq!(
-            resolve_non_stream_usage(100, None, -9, Default::default(), None),
+            resolve_non_stream_usage(100, None, -9, Default::default(), None, 0.0),
             (100, 0, 0, 0)
+        );
+    }
+
+    #[test]
+    fn non_stream_usage_applies_client_cache_ratio_to_provider_and_fallback() {
+        let provider = TokenUsage {
+            uncached_input_tokens: 100,
+            cache_read_input_tokens: 200,
+            cache_write_input_tokens: 700,
+            output_tokens: 11,
+        };
+        assert_eq!(
+            resolve_non_stream_usage(100, None, 9, Default::default(), Some(provider), 90.0),
+            (100, 11, 0, 900)
+        );
+        assert_eq!(
+            resolve_non_stream_usage(1000, None, 9, Default::default(), None, 90.0),
+            (100, 9, 0, 900)
         );
     }
 
