@@ -332,7 +332,7 @@ Admin API 鉴权同样支持：
 <a id="configuration"></a>
 ## ⚙️ 配置
 
-默认配置文件名是 `config.json`。首次启动如果文件不存在，会自动生成最小配置。
+未通过 `--config` 显式指定路径时，程序会优先读取当前工作目录下的 `data/config.json`；该文件不存在时回退到 `config.json`。首次启动如果目标文件不存在，会自动生成最小配置。
 
 ### 最小配置
 
@@ -387,7 +387,7 @@ Admin API 鉴权同样支持：
 <a id="credentials"></a>
 ## 🔐 凭据
 
-默认凭据文件名是 `credentials.json`。推荐通过 Admin UI 添加、登录和重登凭据；直接编辑文件时建议使用数组格式。
+默认凭据文件名是 `credentials.json`。未通过 `--credentials` 显式指定路径时，程序会优先读取当前工作目录下的 `data/credentials.json`；该文件不存在时回退到 `credentials.json`。推荐通过 Admin UI 添加、登录和重登凭据；直接编辑文件时建议使用数组格式。
 
 ```json
 [
@@ -812,6 +812,15 @@ Docker 镜像：
 常用命令：
 
 ```bash
+# 后端开发模式（从项目根目录执行时会优先读取 data/config.json 和 data/credentials.json）
+cargo run
+
+# 指定配置文件（可选）
+cargo run -- --config /path/to/config.json --credentials /path/to/credentials.json
+
+# 前端开发服务器（另开终端）
+cd admin-ui && bun install && KIRO_API_TARGET=http://127.0.0.1:8990 bun run dev
+
 # 后端测试
 cargo test
 

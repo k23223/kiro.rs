@@ -937,6 +937,7 @@ fn key_to_item(k: &super::client_keys::ClientKey) -> ClientKeyItem {
         total_cache_read_tokens: k.total_cache_read_tokens,
         total_credits: k.total_credits,
         max_credits: k.max_credits,
+        cache_ratio: k.cache_ratio,
         group: k.group.clone(),
         is_system: k.is_system,
     }
@@ -968,6 +969,16 @@ pub async fn create_client_key(
         )
             .into_response();
     }
+    // 校验缓存比例：单位为百分比，必须是 0 到 100 的有限数值
+    if !payload.cache_ratio.is_finite() || !(0.0..=100.0).contains(&payload.cache_ratio) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(super::types::AdminErrorResponse::invalid_request(
+                "cacheRatio 必须是 0-100 的数值",
+            )),
+        )
+            .into_response();
+    }
     // 校验积分上限（若提供）：必须是非负有限值
     if let Some(v) = payload.max_credits {
         if !v.is_finite() || v < 0.0 {
@@ -995,6 +1006,7 @@ pub async fn create_client_key(
     if let Some(v) = payload.max_credits {
         state.client_keys.set_max_credits(entry.id, Some(v));
     }
+    state.client_keys.set_cache_ratio(entry.id, payload.cache_ratio);
     Json(CreateClientKeyResponse {
         id: entry.id,
         key: entry.key,
@@ -1077,6 +1089,17 @@ pub async fn update_client_key(
     Json(payload): Json<UpdateClientKeyRequest>,
 ) -> impl IntoResponse {
     use axum::http::StatusCode;
+    if let Some(v) = payload.cache_ratio {
+        if !v.is_finite() || !(0.0..=100.0).contains(&v) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(super::types::AdminErrorResponse::invalid_request(
+                    "cacheRatio 必须是 0-100 的数值",
+                )),
+            )
+                .into_response();
+        }
+    }
     let description = payload
         .description
         .map(|d| if d.is_empty() { None } else { Some(d) });
@@ -1092,6 +1115,9 @@ pub async fn update_client_key(
         .client_keys
         .update_meta(id, payload.name, description, group)
     {
+        if let Some(v) = payload.cache_ratio {
+            state.client_keys.set_cache_ratio(id, v);
+        }
         Json(SuccessResponse::new(format!("Key #{} 已更新", id))).into_response()
     } else {
         (

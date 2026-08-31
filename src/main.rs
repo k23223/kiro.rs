@@ -32,13 +32,14 @@ async fn main() {
         )
         .init();
 
-    // 解析配置/凭证路径
+    // 解析配置/凭证路径：开发环境优先使用仓库 data/ 中的运行数据；
+    // 若 data/ 中尚未初始化，则兼容使用当前工作目录下的旧默认路径。
     let config_path = args
         .config
-        .unwrap_or_else(|| Config::default_config_path().to_string());
+        .unwrap_or_else(|| default_runtime_path("config.json"));
     let credentials_path = args
         .credentials
-        .unwrap_or_else(|| KiroCredentials::default_credentials_path().to_string());
+        .unwrap_or_else(|| default_runtime_path("credentials.json"));
 
     // 文件不存在时自动初始化（Docker 首次部署友好）
     ensure_config_files(&config_path, &credentials_path);
@@ -354,6 +355,24 @@ async fn main() {
 
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
+}
+
+/// 解析未显式指定的运行数据路径。
+///
+/// 仓库开发环境把配置放在 `data/` 中；若该文件不存在，则回退到项目根目录，
+/// 兼容旧版启动方式以及没有 `data/` 目录的全新环境。
+fn default_runtime_path(file_name: &str) -> String {
+    let data_path = std::path::Path::new("data").join(file_name);
+    if data_path.exists() {
+        data_path.to_string_lossy().into_owned()
+    } else {
+        let fallback = match file_name {
+            "config.json" => Config::default_config_path(),
+            "credentials.json" => KiroCredentials::default_credentials_path(),
+            _ => file_name,
+        };
+        fallback.to_string()
+    }
 }
 
 /// 文件不存在时初始化配置/凭证文件

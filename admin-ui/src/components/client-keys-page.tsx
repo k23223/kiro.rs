@@ -64,6 +64,14 @@ function CreditsUsage({ used, max }: { used: number; max?: number }) {
   )
 }
 
+function parseCacheRatioInput(raw: string): number | 'invalid' {
+  const t = raw.trim()
+  if (t === '') return 'invalid'
+  const n = Number(t)
+  if (!Number.isFinite(n) || n < 0 || n > 100) return 'invalid'
+  return n
+}
+
 function formatRelative(ts?: string): string {
   if (!ts) return '从未使用'
   const t = new Date(ts).getTime()
@@ -89,6 +97,7 @@ export function ClientKeysPage() {
 
   const [createOpen, setCreateOpen] = useState(false)
   const [createName, setCreateName] = useState('')
+  const [createCacheRatio, setCreateCacheRatio] = useState('0')
   const [createDesc, setCreateDesc] = useState('')
   const [createGroup, setCreateGroup] = useState('')
   const [createMaxCredits, setCreateMaxCredits] = useState('')
@@ -98,6 +107,7 @@ export function ClientKeysPage() {
   const [editOpen, setEditOpen] = useState(false)
   const [editTarget, setEditTarget] = useState<ClientKeyItem | null>(null)
   const [editName, setEditName] = useState('')
+  const [editCacheRatio, setEditCacheRatio] = useState('0')
   const [editDesc, setEditDesc] = useState('')
   const [editGroup, setEditGroup] = useState('')
   const [editMaxCredits, setEditMaxCredits] = useState('')
@@ -107,6 +117,11 @@ export function ClientKeysPage() {
     const name = createName.trim()
     if (!name) {
       toast.error('请填写名称')
+      return
+    }
+    const cacheRatio = parseCacheRatioInput(createCacheRatio)
+    if (cacheRatio === 'invalid') {
+      toast.error('缓存比例必须是 0-100 的数值')
       return
     }
     const maxCredits = parseMaxCreditsInput(createMaxCredits)
@@ -119,11 +134,13 @@ export function ClientKeysPage() {
         name,
         description: createDesc.trim() || undefined,
         group: createGroup.trim() || undefined,
+        cacheRatio,
         maxCredits: maxCredits ?? undefined,
       })
       setCreatedKey(res)
       setCreateOpen(false)
       setCreateName('')
+      setCreateCacheRatio('0')
       setCreateDesc('')
       setCreateGroup('')
       setCreateMaxCredits('')
@@ -206,6 +223,7 @@ export function ClientKeysPage() {
   const startEdit = (item: ClientKeyItem) => {
     setEditTarget(item)
     setEditName(item.name)
+    setEditCacheRatio(String(item.cacheRatio ?? 0))
     setEditDesc(item.description ?? '')
     setEditGroup(item.group ?? '')
     setEditMaxCredits(item.maxCredits != null ? String(item.maxCredits) : '')
@@ -215,6 +233,11 @@ export function ClientKeysPage() {
   const handleEditSave = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!editTarget) return
+    const cacheRatio = parseCacheRatioInput(editCacheRatio)
+    if (cacheRatio === 'invalid') {
+      toast.error('缓存比例必须是 0-100 的数值')
+      return
+    }
     const maxCredits = parseMaxCreditsInput(editMaxCredits)
     if (maxCredits === 'invalid') {
       toast.error('积分上限必须是非负数')
@@ -223,7 +246,12 @@ export function ClientKeysPage() {
     try {
       await updateKey.mutateAsync({
         id: editTarget.id,
-        req: { name: editName.trim(), description: editDesc.trim(), group: editGroup.trim() },
+        req: {
+          name: editName.trim(),
+          description: editDesc.trim(),
+          group: editGroup.trim(),
+          cacheRatio,
+        },
       })
       // 仅在上限发生变化时才调用额度接口，避免无谓写入
       const prev = editTarget.maxCredits ?? null
@@ -430,6 +458,29 @@ export function ClientKeysPage() {
               />
             </div>
             <div>
+              <label className="text-[12px] text-muted-foreground">缓存比例</label>
+              <div className="relative">
+                <Input
+                  type="number"
+                  min="0"
+                  max="100"
+                  step="any"
+                  inputMode="decimal"
+                  placeholder="0-100"
+                  value={createCacheRatio}
+                  onChange={(e) => setCreateCacheRatio(e.target.value)}
+                  disabled={createKey.isPending}
+                  className="pr-8"
+                />
+                <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-sm text-muted-foreground">
+                  %
+                </span>
+              </div>
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                有效值为 0%-100%，输入 10 代表 10%。
+              </p>
+            </div>
+            <div>
               <label className="text-[12px] text-muted-foreground">描述（可选）</label>
               <Input
                 placeholder="可选备注，如绑定的项目、负责人等"
@@ -543,6 +594,29 @@ export function ClientKeysPage() {
             <div>
               <label className="text-[12px] text-muted-foreground">名称</label>
               <Input value={editName} onChange={(e) => setEditName(e.target.value)} />
+            </div>
+            <div>
+              <label className="text-[12px] text-muted-foreground">缓存比例</label>
+              <div className="relative">
+                <Input
+                  type="number"
+                  min="0"
+                  max="100"
+                  step="any"
+                  inputMode="decimal"
+                  placeholder="0-100"
+                  value={editCacheRatio}
+                  onChange={(e) => setEditCacheRatio(e.target.value)}
+                  disabled={updateKey.isPending}
+                  className="pr-8"
+                />
+                <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-sm text-muted-foreground">
+                  %
+                </span>
+              </div>
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                有效值为 0%-100%，输入 10 代表 10%。
+              </p>
             </div>
             <div>
               <label className="text-[12px] text-muted-foreground">描述</label>

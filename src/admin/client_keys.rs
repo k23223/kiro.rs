@@ -51,6 +51,9 @@ pub struct ClientKey {
     /// `total_credits`，通过「重置统计」清零后可重新计费。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_credits: Option<f64>,
+    /// 缓存比例，单位为百分比（0 表示 0%，100 表示 100%）。
+    #[serde(default)]
+    pub cache_ratio: f64,
     /// 绑定的账号分组名（可选）
     ///
     /// 设置后，用该 Key 发起的请求只会调度到 groups 包含此分组名的上游账号（严格隔离）。
@@ -195,6 +198,7 @@ impl ClientKeyManager {
             total_cache_read_tokens: 0,
             total_credits: 0.0,
             max_credits: None,
+            cache_ratio: 0.0,
             group: group.filter(|g| !g.trim().is_empty()),
             is_system: false,
         };
@@ -239,6 +243,7 @@ impl ClientKeyManager {
                     total_cache_read_tokens: 0,
                     total_credits: 0.0,
                     max_credits: None,
+                    cache_ratio: 0.0,
                     group: None,
                     is_system: true,
                 },
@@ -461,6 +466,25 @@ impl ClientKeyManager {
         }
     }
 
+    /// 设置客户端 Key 的缓存比例，单位为百分比。
+    pub fn set_cache_ratio(&self, id: u64, cache_ratio: f64) -> bool {
+        if !cache_ratio.is_finite() || !(0.0..=100.0).contains(&cache_ratio) {
+            return false;
+        }
+        let mut inner = self.inner.write();
+        let updated = match inner.entries.get_mut(&id) {
+            Some(e) => {
+                e.cache_ratio = cache_ratio;
+                true
+            }
+            None => false,
+        };
+        if updated {
+            self.save_locked(&inner);
+        }
+        updated
+    }
+
     /// 常量时间匹配所有启用 Key；命中后若已达积分上限则返回 [`KeyAuth::OverLimit`]，
     /// 否则累加调用次数并返回 [`KeyAuth::Ok`]。
     pub fn verify_and_touch_ex(&self, presented: &str) -> KeyAuth {
@@ -667,6 +691,19 @@ mod tests {
         assert!(!mgr.set_max_credits(entry.id, Some(f64::NAN)));
         assert!(!mgr.set_max_credits(999, Some(5.0)));
         assert!(mgr.set_max_credits(entry.id, Some(0.0)));
+    }
+
+    #[test]
+    fn set_cache_ratio_accepts_percentage_and_rejects_invalid() {
+        let mgr = ClientKeyManager::new();
+        let entry = mgr.create("test".to_string(), None, None);
+        assert!(mgr.set_cache_ratio(entry.id, 10.0));
+        assert_eq!(mgr.list()[0].cache_ratio, 10.0);
+        assert!(mgr.set_cache_ratio(entry.id, 0.0));
+        assert!(mgr.set_cache_ratio(entry.id, 100.0));
+        assert!(!mgr.set_cache_ratio(entry.id, -1.0));
+        assert!(!mgr.set_cache_ratio(entry.id, 100.1));
+        assert!(!mgr.set_cache_ratio(entry.id, f64::NAN));
     }
 
     #[test]
