@@ -69,7 +69,7 @@
 推荐生产部署使用 Docker。仓库提供的 `docker-compose.yml` 默认使用 Docker Hub 镜像：
 
 ```yaml
-image: ${KIRO_RS_IMAGE:-zyphrzero/kiro-rs:latest}
+image: ${KIRO_RS_IMAGE:-k23223/kiro-rs:latest}
 ports:
   - "8990:8990"
 volumes:
@@ -81,7 +81,7 @@ volumes:
 ```bash
 mkdir -p /opt/kiro-rs/data
 cd /opt/kiro-rs
-curl -O https://raw.githubusercontent.com/ZyphrZero/kiro.rs/master/docker-compose.yml
+curl -O https://raw.githubusercontent.com/k23223/kiro.rs/master/docker-compose.yml
 docker compose up -d
 ```
 
@@ -121,12 +121,12 @@ docker compose logs --tail=200 kiro-rs
 指定镜像版本：
 
 ```bash
-KIRO_RS_IMAGE=zyphrzero/kiro-rs:0.7.3 docker compose up -d
+KIRO_RS_IMAGE=k23223/kiro-rs:0.7.3 docker compose up -d
 ```
 
 ### 下载二进制
 
-正式版本会在 [GitHub Release](https://github.com/ZyphrZero/kiro.rs/releases/latest) 中发布以下平台产物：
+正式版本会在 [GitHub Release](https://github.com/k23223/kiro.rs/releases/latest) 中发布以下平台产物：
 
 - Windows x64
 - Linux x64 / arm64
@@ -796,13 +796,13 @@ credential.proxyUrl -> config.proxyUrl -> direct
 - 构建并推送 Docker Hub 多架构镜像。
 - 创建 GitHub Release。
 
-当前稳定版：[v0.7.3](https://github.com/ZyphrZero/kiro.rs/releases/tag/v0.7.3)。
+当前稳定版：[v0.7.3](https://github.com/k23223/kiro.rs/releases/tag/v0.7.3)。
 
 Docker 镜像：
 
-- `zyphrzero/kiro-rs:<version>`
-- `zyphrzero/kiro-rs:latest`
-- `zyphrzero/kiro-rs:beta`（master beta 构建）
+- `k23223/kiro-rs:<version>`
+- `k23223/kiro-rs:latest`
+- `k23223/kiro-rs:beta`（master beta 构建）
 
 容器内在线更新会下载对应平台二进制并替换当前可执行文件；替换后进程退出，由 Docker `restart: unless-stopped` 拉起新进程。回退依赖本地 `<exe>.backup`。
 
